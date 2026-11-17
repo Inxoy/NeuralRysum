@@ -39,6 +39,7 @@ from neuralrysum.data import find_audio, load_mono  # noqa: E402
 from neuralrysum.descriptors import descriptors  # noqa: E402
 from neuralrysum.export import load_checkpoint  # noqa: E402
 from neuralrysum.losses import multires_stft_loss  # noqa: E402
+from neuralrysum.v2 import V2, load_pitch, load_synth  # noqa: E402
 
 SR = 48000
 NOTE = 2 * SR  # samples per note
@@ -118,6 +119,14 @@ def envelope(y: np.ndarray) -> np.ndarray:
 
 
 def organ_clips(data: str, n: int, length: int) -> torch.Tensor:
+    index = Path(data, "index.json")
+    if index.exists():  # a folder prepared by neuralrysum.organ_data: use its validation clips
+        clips = [c for c in json.loads(index.read_text())["clips"] if c["split"] == "valid"]
+        audio = np.load(Path(data, "audio.npy"), mmap_mode="r")
+        rows = [clips[i * len(clips) // n]["row"] for i in range(n)]
+        start = audio.shape[1] // 3
+        return torch.from_numpy(np.stack([audio[r, start:start + length] / 32767.0 for r in rows])
+                                .astype(np.float32))[:, None]
     files = find_audio(data)
     picks = [files[i * len(files) // n] for i in range(n)]
     clips = []
@@ -129,17 +138,23 @@ def organ_clips(data: str, n: int, length: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def evaluate(ckpt: str, organ: torch.Tensor, organ_bands: np.ndarray, signals: dict, wav_dir):
-    model = load_checkpoint(ckpt)
-    cfg = model.cfg
-    assert cfg.sample_rate == SR
+def evaluate(ckpt: str, organ: torch.Tensor, organ_bands: np.ndarray, signals: dict, wav_dir, pitch=None):
     torch.manual_seed(0)
-
-    # centre of the timbre space = where the plugin's knobs sit at zero
-    _, h = model.fast(organ)
-    mean, _, _ = model.slow(h)
-    z0 = mean[:, :, 8:].mean((0, 2))
-    d0 = descriptors(organ, cfg.slow_hop, SR)[:, :, 8:].mean((0, 2))
+    if torch.load(ckpt, map_location="cpu").get("kind") == "synth":
+        if not pitch:
+            raise SystemExit(f"{ckpt} is a v2 synth: pass --pitch with the pitch estimator checkpoint")
+        model = V2(load_pitch(pitch), load_synth(ckpt))
+        cfg = model.cfg
+        z0, d0 = model.timbre(organ)
+    else:
+        model = load_checkpoint(ckpt)
+        cfg = model.cfg
+        # centre of the timbre space = where the plugin's knobs sit at zero
+        _, h = model.fast(organ)
+        mean, _, _ = model.slow(h)
+        z0 = mean[:, :, 8:].mean((0, 2))
+        d0 = descriptors(organ, cfg.slow_hop, SR)[:, :, 8:].mean((0, 2))
+    assert cfg.sample_rate == SR
 
     res = {"organ": float(np.mean([multires_stft_loss(model.transfer(c[None]), c[None]).item()
                                    for c in organ]))}
@@ -183,6 +198,7 @@ def main() -> None:
     ap.add_argument("--wav-dir", help="write the rendered signals here, one folder per checkpoint")
     ap.add_argument("--json")
     ap.add_argument("--detail", action="store_true", help="also print every signal on its own")
+    ap.add_argument("--pitch", help="pitch estimator checkpoint, for v2 synth checkpoints")
     a = ap.parse_args()
 
     signals = test_signals()
@@ -201,7 +217,8 @@ def main() -> None:
     for ck in a.ckpt:
         name = label(ck)
         r = results[name] = evaluate(ck, organ, organ_bands, signals,
-                                     Path(a.wav_dir, name.replace("/", "_")) if a.wav_dir else None)
+                                     Path(a.wav_dir, name.replace("/", "_")) if a.wav_dir else None,
+                                     pitch=a.pitch)
         cells = " |".join(f" {r[m]['transfer']:14.0f} % {r[m]['hf']:6.1f}  {r[m]['pitch']:4.0f} % {r[m]['env']:5.2f}"
                           for m in ("manual", "follow"))
         print(f"{name:26s} |{cells} | {r['organ']:6.3f} {r['silence']:7.1f}", flush=True)
