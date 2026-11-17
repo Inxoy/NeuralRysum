@@ -15,7 +15,8 @@ from neuralrysum import NeuralRysum
 from neuralrysum.export import export
 
 ROOT = Path(__file__).resolve().parents[1]
-CXX = shutil.which("g++") or shutil.which("clang++")
+CXX = shutil.which("g++") or shutil.which("clang++") or shutil.which("cl")
+MSVC = CXX is not None and Path(CXX).stem.lower() == "cl"
 pytestmark = pytest.mark.skipif(CXX is None, reason="no C++ compiler on PATH")
 TOL = 2e-4
 
@@ -24,11 +25,13 @@ TOL = 2e-4
 def setup(tmp_path_factory):
     d = tmp_path_factory.mktemp("engine")
     cli = d / "nrys_cli"
-    subprocess.run(
-        [CXX, "-std=c++17", "-O2", "-I", str(ROOT / "engine/include"),
-         str(ROOT / "engine/tools/nrys_cli.cpp"), "-o", str(cli)],
-        check=True,
-    )
+    src, inc = str(ROOT / "engine/tools/nrys_cli.cpp"), str(ROOT / "engine/include")
+    if MSVC:
+        cmd = [CXX, "/nologo", "/std:c++17", "/O2", "/EHsc", "/I", inc, src,
+               f"/Fe:{cli}.exe", f"/Fo:{d}\\"]
+    else:
+        cmd = [CXX, "-std=c++17", "-O2", "-I", inc, src, "-o", str(cli)]
+    subprocess.run(cmd, check=True)
     torch.manual_seed(1)
     model = NeuralRysum().eval()
     # untrained weights, but with every path active

@@ -19,11 +19,14 @@ from .augment import perturb_timbre
 from .config import ModelConfig, TrainConfig, large_config
 from .data import CropDataset
 from .descriptors import descriptors
+from .foreign import synth_foreign
 from .losses import (
     MultiResDiscriminator,
     d_loss,
     feature_matching,
+    fine_structure_loss,
     g_adv_loss,
+    loudness_loss,
     multires_stft_loss,
 )
 from .model import NeuralRysum
@@ -39,9 +42,15 @@ def build_argparser() -> argparse.ArgumentParser:
 
 def train(tc: TrainConfig, device: str = "cpu", mc: ModelConfig | None = None) -> Path:
     torch.manual_seed(tc.seed)
+    # input shapes are fixed, so let cuDNN pick its fastest conv algorithms
+    # (about 1.4x faster once the discriminator joins)
+    torch.backends.cudnn.benchmark = True
     out = Path(tc.out)
     out.mkdir(parents=True, exist_ok=True)
-    mc = mc or (large_config() if tc.size == "large" else ModelConfig())
+    if mc is None:
+        mc = large_config() if tc.size == "large" else ModelConfig()
+        if tc.fast_dim > 0:
+            mc.fast_dim = tc.fast_dim
     assert tc.crop % mc.slow_hop == 0, f"--crop must be a multiple of {mc.slow_hop}"
 
     model = NeuralRysum(mc).to(device)
@@ -85,14 +94,25 @@ def train(tc: TrainConfig, device: str = "cpu", mc: ModelConfig | None = None) -
                 desc = descriptors(x, mc.slow_hop, mc.sample_rate)
                 x_fast = None
                 if torch.rand(()) < tc.augment_prob:
-                    x_fast = perturb_timbre(x, mc.sample_rate)
+                    x_fast = perturb_timbre(x, mc.sample_rate, tc.perturb)
             use_adv = step >= tc.warmup_adv
 
-            o = model(x, desc, x_fast)
+            o = model(x, desc, x_fast, code_noise=tc.code_noise)
             y = o["y"]
+
+            # transfer: foreign input on the fast path, timbre of real clips
+            y_f = None
+            if use_adv and tc.foreign_weight > 0:
+                nf = min(tc.foreign_batch, x.shape[0])
+                x_f = synth_foreign(nf, x.shape[-1], mc.sample_rate, device)
+                e_f, _ = model.fast(x_f)
+                y_f = model.decoder(e_f, o["c"][:nf].detach())
 
             if use_adv:
                 loss_d = d_loss(disc(x), disc(y.detach()))
+                if y_f is not None:
+                    loss_d = loss_d + tc.foreign_weight * sum(
+                        torch.relu(1 + f).mean() for f, _ in disc(y_f.detach())) / len(disc.ds)
                 opt_d.zero_grad(set_to_none=True)
                 loss_d.backward()
                 opt_d.step()
@@ -110,6 +130,12 @@ def train(tc: TrainConfig, device: str = "cpu", mc: ModelConfig | None = None) -
                 l_adv, l_fm = g_adv_loss(fake), feature_matching(real, fake)
                 loss = loss + tc.adv_weight * l_adv + tc.fm_weight * l_fm
                 stats.update(adv=l_adv.item(), fm=l_fm.item(), d=loss_d.item())
+            if y_f is not None:
+                l_fadv = g_adv_loss(disc(y_f))
+                l_fine = fine_structure_loss(y_f, x_f, mc.sample_rate)
+                l_loud = loudness_loss(y_f, x_f)
+                loss = loss + tc.foreign_weight * l_fadv + tc.fine_weight * l_fine + tc.loud_weight * l_loud
+                stats.update(fadv=l_fadv.item(), fine=l_fine.item(), loud=l_loud.item())
 
             opt_g.zero_grad(set_to_none=True)
             loss.backward()

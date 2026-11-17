@@ -112,3 +112,12 @@ class TrainConfig:
     log_every: int = 100
     seed: int = 0
     size: str = "default"  # or "large"
+    # ---- levers against timbre leaking through the fast path ---------------
+    fast_dim: int = 0  # size of the fast code; 0 = keep the default of --size
+    code_noise: float = 0.0  # std of noise added to the fast code on its way to the decoder
+    perturb: str = "mild"  # or "strong": how hard the fast-path input is bent
+    # transfer objective on synthetic foreign input (see foreign.py); adversarial phase only
+    foreign_weight: float = 0.0  # 0 = off
+    foreign_batch: int = 4
+    fine_weight: float = 2.0  # keep the input's partials
+    loud_weight: float = 1.0  # keep the input's loudness envelope

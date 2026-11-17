@@ -239,19 +239,24 @@ class NeuralRysum(nn.Module):
         desc: torch.Tensor,
         x_fast: Optional[torch.Tensor] = None,
         noise: Optional[torch.Tensor] = None,
+        code_noise: float = 0.0,
     ) -> dict:
         """
         x:      (B, 1, T) clean target audio, T a multiple of ``slow_hop``.
         desc:   (B, n_desc, T / slow_hop) descriptors measured on ``x``.
         x_fast: timbre-perturbed copy of x fed to the fast path (None = x).
+        code_noise: std of Gaussian noise added to the fast code before the
+                decoder. The code is bounded by tanh, so this caps how much it
+                can carry per frame. Training only.
         """
         e, h = self.fast(x if x_fast is None else x_fast)
         h_clean = h if x_fast is None else self.fast.trunk(x)
         mean, logvar, desc_pred = self.slow(h_clean)
         z = mean + torch.randn_like(mean) * (0.5 * logvar).exp()
         c = self.hold(torch.cat([self.delay_one(z), desc], dim=1))
-        y = self.decoder(e, c, noise)
-        kl = 0.5 * (mean**2 + logvar.exp() - 1.0 - logvar).mean()
+        e_dec = e + code_noise * torch.randn_like(e) if code_noise > 0 else e
+        y = self.decoder(e_dec, c, noise)
+        kl =0.5 * (mean**2 + logvar.exp() - 1.0 - logvar).mean()
         return {
             "y": y,
             "e": e,

@@ -36,6 +36,32 @@ def multires_stft_loss(y: torch.Tensor, x: torch.Tensor, ffts=(2048, 1024, 512, 
     return loss / len(ffts)
 
 
+def fine_structure_loss(y: torch.Tensor, x: torch.Tensor, sample_rate: int, n_fft: int = 2048,
+                        fmax: float = 4000.0, smooth_hz: float = 400.0, eps: float = 0.1):
+    """Where the partials are, regardless of how strong each one is.
+
+    The log spectrum minus its own average over ``smooth_hz`` keeps the peaks
+    and valleys (pitch, chords) and drops the spectral envelope (timbre), so
+    this ties the notes of ``y`` to those of ``x`` and leaves the timbre free.
+    """
+    def whitened(s: torch.Tensor) -> torch.Tensor:
+        m = torch.log(_stft_mag(s.squeeze(1), n_fft) + eps)[:, : int(fmax * n_fft / sample_rate)]
+        k = int(smooth_hz * n_fft / sample_rate) // 2 * 2 + 1
+        m = m.transpose(1, 2)  # (B, frames, bins)
+        avg = F.avg_pool1d(F.pad(m, (k // 2, k // 2), mode="replicate"), k, stride=1)
+        return m - avg
+
+    return F.l1_loss(whitened(y), whitened(x))
+
+
+def loudness_loss(y: torch.Tensor, x: torch.Tensor, frame: int = 1024, eps: float = 1e-3):
+    """L1 between log RMS envelopes (hop = frame / 2)."""
+    def env(s: torch.Tensor) -> torch.Tensor:
+        return torch.log(F.avg_pool1d(s.pow(2), frame, stride=frame // 2).sqrt() + eps)
+
+    return F.l1_loss(env(y), env(x))
+
+
 class SpecDiscriminator(nn.Module):
     """Patch discriminator on one complex STFT resolution."""
 

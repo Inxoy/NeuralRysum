@@ -9,3 +9,6 @@ plugin/build/
 *.pt
 *.nrys
 *.f32
+marriaiii_fullalbum/
+.toolchain/
+models/
