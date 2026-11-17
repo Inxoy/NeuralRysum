@@ -2,7 +2,7 @@
 
 *Technical report, branch `redesign-pitch-synth`, 17 November 2026.*
 *Status: final models (pitch estimator 40 k steps, synth 150 k steps). Built into the Rysum plugin as
-the stop "Vox humana" (branch `vox-humana` of rysum_plugin); see Section 8.5.*
+the stop "Vox humana" (in `main` of rysum_plugin); see Section 8.5.*
 
 ---
 
@@ -619,6 +619,26 @@ v2 is built into the sample-based Rysum plugin as a ninth stop, *Vox humana 8′
   alone is about as loud as one sample stop (−28 dBFS RMS against −25.7 dBFS for Gedackt + Octave);
   no clicks; whole plugin 4 % CPU for the Vox humana from the keys, 15 % with the input playing it,
   25 % with input, Follow, Vox humana and sample stops together.
+
+**Where it appears in the plugin:**
+
+| Page | What it shows |
+|---|---|
+| Spieltisch | the knob *Vox humana* with Lautstärke and Wind, like the other stops; *Vox …* opens the timbre controls (Klangfarbe X/Y, Helligkeit, Hauch, Breite) and the input options (*Eingang spielt die Orgel*, *Klangfarbe folgt dem Eingang*, detection threshold, confirmation time, number of voices) |
+| Raum | a row under the audio input with its own panel: Lautstärke, Hall-Anteil, Richtung, Höhe, Abstand, the learned room; a symbol in the top view that is dragged to place it |
+| Saal | the symbol in the floor plan, in the room of the audio input; in the 3D view its own model (below) |
+| Modulation | all its parameters form the target group *Vox humana*; the engine reads their modulated values, so an LFO on Klangfarbe X glides through the registrations |
+
+**The 3D model.** The stop has no pipes, so it gets a picture of what the network does. Its eight
+voices are glass pipes standing in a row at its place, each as long as an open 8′ pipe of the pitch
+it sings at that moment (2.44 m · 2^−(key−36)/12), so a tracked voice that glides visibly grows or
+shrinks. Around each pipe sit eight collars, one per band of its harmonics on key/2: 16′, 8′, 5⅓′,
+4′, 3⅕′–2⅔′, 2²⁄₇′–2′, 1⁷⁄₉′–1′ and higher, from the bottom up. A collar's width and brightness show
+that band's strength relative to the strongest, so a flute shows mostly the 8′ collar and a plenum
+with mixtures lights the upper ones; turning the timbre controls (or modulating them) changes the
+collars. A sounding pipe glows with its level and is a lamp when the light is off. Each pipe shows
+the louder of its tracked voice and its played voice. The synth publishes key, level and the eight
+band energies per voice and frame for this (`OrganSynth::Display`, lock-free).
 
 ---
 
