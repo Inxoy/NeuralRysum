@@ -166,20 +166,22 @@ def peaks(sal: np.ndarray, bin_midi: np.ndarray, thresh: float):
 class VoiceTracker:
     """Turns salience / onset frames into up to ``voices`` continuous voices.
 
-    Same logic as the plugin will run: a peak above ``on`` starts a voice, a
-    voice continues while a peak above ``off`` lies within ``match`` semitones,
-    an onset at its pitch restarts it, and it is released after ``hold``
-    frames without a peak.
+    Same logic as the plugin will run: a peak above ``on`` that lasts
+    ``confirm`` frames starts a voice, a voice continues while a peak above
+    ``off`` lies within ``match`` semitones, an onset at its pitch restarts it,
+    and it is released after ``hold`` frames without a peak.
     """
 
-    def __init__(self, bin_midi, voices=8, on=0.5, off=0.3, match=0.7, hold=3, onset=0.5):
+    def __init__(self, bin_midi, voices=8, on=0.6, off=0.3, match=0.7, hold=24, onset=0.5, confirm=4):
         self.bin_midi = bin_midi
         self.n = voices
         self.on, self.off, self.match, self.hold, self.onset_th = on, off, match, hold, onset
+        self.confirm = confirm  # frames a new peak must last before it starts a voice
         self.midi = np.zeros(voices)
         self.active = np.zeros(voices, bool)
         self.missing = np.zeros(voices, int)
-        self.age = np.zeros(voices, int)  # frames since (re)start, -1 = new this frame
+        self.age = np.zeros(voices, int)  # frames since (re)start
+        self.pending = []  # (midi, frames seen) of peaks that have not started a voice yet
 
     def step(self, sal: np.ndarray, ons: np.ndarray):
         """-> (midi, gate, started) arrays for this frame."""
@@ -207,16 +209,21 @@ class VoiceTracker:
                 started[v] = True
             else:
                 self.age[v] += 1
+        pending = []
         for j, (m, s) in enumerate(cand):
             if j in used or s < self.on:
                 continue
+            seen = 1 + max([c for pm, c in self.pending if abs(pm - m) < self.match], default=0)
             free = np.nonzero(~self.active)[0]
-            if len(free) == 0:
-                break
+            if seen < self.confirm or len(free) == 0:
+                pending.append((m, seen))
+                continue
             v = free[0]
             self.active[v], self.midi[v], self.missing[v], self.age[v] = True, m, 0, 0
             started[v] = True
-        return self.midi.copy(), (self.active & (self.missing == 0)).astype(np.float32), started
+        self.pending = pending
+        # a voice stays gated through short gaps; it is released only once ``hold`` runs out
+        return self.midi.copy(), self.active.astype(np.float32), started
 
 
 @torch.no_grad()

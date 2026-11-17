@@ -80,16 +80,21 @@ def test_voice_frames_follow_the_notes():
 def test_tracker_starts_holds_and_releases_a_voice():
     cfg = PitchConfig()
     bm = cfg.bin_midi()
-    tr = VoiceTracker(bm, voices=4)
+    tr = VoiceTracker(bm, voices=4, on=0.5, hold=12, confirm=2)
     sal = np.zeros(len(bm))
     i = int((60.0 - cfg.midi_lo) * 3)
     sal[i - 1: i + 2] = [0.4, 0.9, 0.4]
     ons = np.zeros(len(bm))
     m, g, s = tr.step(sal, ons)
+    assert g.sum() == 0  # a peak has to last two frames
+    m, g, s = tr.step(sal, ons)
     assert g.sum() == 1 and s.sum() == 1 and abs(m[g > 0][0] - 60.0) < 0.05
     m, g, s = tr.step(sal, ons)
     assert g.sum() == 1 and s.sum() == 0
-    for _ in range(5):
+    for _ in range(5):  # a short gap keeps the voice gated
+        m, g, s = tr.step(np.zeros(len(bm)), ons)
+    assert g.sum() == 1
+    for _ in range(10):
         m, g, s = tr.step(np.zeros(len(bm)), ons)
     assert g.sum() == 0
 
