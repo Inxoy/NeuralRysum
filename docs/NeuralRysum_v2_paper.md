@@ -1,8 +1,8 @@
 # NeuralRysum v2: Causal Audio-to-Organ Resynthesis through a Timbre-Blind Pitch Bottleneck
 
 *Technical report, branch `redesign-pitch-synth`, 17 November 2026.*
-*Status: the pitch estimator is final (40 k steps). Synth results are from a snapshot at step 50.7 k of
-150 k; Section 6 will be updated with the final checkpoint.*
+*Status: final models (pitch estimator 40 k steps, synth 150 k steps). Built into the Rysum plugin as
+the stop "Vox humana" (branch `vox-humana` of rysum_plugin); see Section 8.5.*
 
 ---
 
@@ -387,18 +387,21 @@ run once in Manual (dataset-mean timbre) and once in Follow. It reports:
 | v1 | 56 % | −17.5 dB | 98 % | 0.51 | 43 % | −8.2 dB | 99 % | 0.83 | −54.8 dBFS (750 Hz tone) |
 | v1 + foreign fine-tune | 47 % | −12.3 dB | 99 % | 0.93 | 28 % | +2.7 dB | 99 % | 0.88 | −71.1 dBFS |
 | v2, early (pitch 5 k, synth 5 k) | 55 % | −30 dB | 90 % | −0.03 | 62 % | −32 dB | 85 % | 0.07 | −240 dB |
-| **v2 (pitch 40 k, synth 50.7 k)** | **50 %** | **−36.5 dB** | **97 %** | **0.23** | **64 %** | **−29.9 dB** | **91 %** | **0.25** | **−240 dB** |
+| v2 (pitch 40 k, synth 50.7 k) | 50 % | −36.5 dB | 97 % | 0.23 | 64 % | −29.9 dB | 91 % | 0.25 | −240 dB |
+| **v2 final (pitch 40 k, synth 150 k)** | **47 %** | **−36.5 dB** | **94 %** | **0.27** | **58 %** | **−30.3 dB** | **93 %** | **−0.06** | **−240 dB** |
 
-The v2 results for each input signal:
+The final v2 results for each input signal:
 
 | Signal | Mode | Transfer | HF | Pitch | Env |
 |---|---|---|---|---|---|
-| saw | Manual | 54 % | −47.9 dB | 96 % | 0.01 |
-| saw | Follow | 65 % | −40.9 dB | 83 % | −0.00 |
-| voice | Manual | 45 % | −28.7 dB | 98 % | 0.44 |
-| voice | Follow | 70 % | −18.4 dB | 94 % | 0.28 |
-| pluck | Manual | 52 % | −33.0 dB | 98 % | 0.25 |
-| pluck | Follow | 57 % | −30.4 dB | 97 % | 0.47 |
+| saw | Manual | 47 % | −48.8 dB | 98 % | 0.01 |
+| saw | Follow | 46 % | −42.8 dB | 97 % | −0.02 |
+| voice | Manual | 42 % | −27.6 dB | 93 % | 0.67 |
+| voice | Follow | 72 % | −17.0 dB | 92 % | −0.01 |
+| pluck | Manual | 52 % | −33.2 dB | 90 % | 0.11 |
+| pluck | Follow | 56 % | −31.2 dB | 90 % | −0.17 |
+
+The organ reconstruction loss of the final model is 2.24 and its validation spectral loss 0.861.
 
 **Reading the numbers.**
 
@@ -588,18 +591,41 @@ is no exact value, because detection time depends on pitch (Section 6.3). The MI
   PyTorch state dicts plus config, loaded by `load_pitch` / `load_synth` in
   [v2.py](../neuralrysum/v2.py). The synth checkpoint also holds the discriminator and optimiser
   states, which are only needed to resume training.
-- A C++-friendly export, analogous to v1's `.nrys`, is not written yet. It should contain the weights
-  in a flat float32 layout, the config, φ_k and the log-bin tables.
+- `python -m neuralrysum.export_v2` writes the C++ file (`.nrv2`, magic `NRV20001`, 3.4 MB): all
+  weights, the config, φ_k, the log-bin tables, the Manual timbre and the PCA axes of `z` over the
+  organ data. `scripts/make_v2_reference.py` writes reference vectors for testing a port.
 - Reference implementation: `V2.transfer` (audio) and `V2.midi` (MIDI) produce the output the C++ port
   has to match.
+
+### 8.5 The Rysum plugin: the stop "Vox humana"
+
+v2 is built into the sample-based Rysum plugin as a ninth stop, *Vox humana 8′*, plus an option
+*Eingang spielt die Orgel* (branch `vox-humana`):
+
+- **C++ engine** (`plugin/source/vox/`, header-only): the estimator with an AVX2 + FMA kernel for the
+  CNN, the tracker, the synth (voice network batched over all voices, PFFFT inverse FFTs for the
+  wavetables, a 4th-order band-pass noise bank, partitioned convolution for the room) and the Follow
+  encoder. Against PyTorch (`tests/VoxTest.cpp`): estimator logits within 1.4·10⁻³, tracker decisions
+  identical, MIDI rendering within 3·10⁻⁹, tracked rendering within 1 % of peak (phase drift from
+  10⁻⁵-semitone pitch differences). One core: 3.5 % for 8 played voices, 7 % for the estimator,
+  15 % for everything at once.
+- **Glue** (`VoxStop.h`): runs the engine at 48 kHz around any host rate (Hermite resampling), maps
+  held keys to fractional keys in the plugin's tuning (all temperaments, Stimmton, Scala, MTS-ESP),
+  uses 8 voices for tracked notes and 8 for played ones, and turns tracker voices into MIDI notes on
+  channel 16 (folded into the compass, skipping the short octave's gaps), which the sample stops play.
+- **Placement**: the engine treats the Vox humana as one more source like the audio input, with its own
+  direction, distance, room send and early reflections.
+- **Measured in the plugin** (`tests/VoxRender.cpp`, 20 s of a full mix as input): the Vox humana
+  alone is about as loud as one sample stop (−28 dBFS RMS against −25.7 dBFS for Gedackt + Octave);
+  no clicks; whole plugin 4 % CPU for the Vox humana from the keys, 15 % with the input playing it,
+  25 % with input, Follow, Vox humana and sample stops together.
 
 ---
 
 ## 9 Next steps
 
-1. Finish the synth to 150 k steps, re-run Section 6 and update this report.
-2. Port to C++ for the plugin, with MIDI input, and check it against the Python reference: same output
-   within float tolerance, real-time CPU load, no allocations in the audio thread.
+1. Listening tests of the Vox humana in a host; tune the default level, tracker defaults and room.
+2. Re-run Section 6.2 (the full mix) with the final model.
 3. Improve the low end: longer analysis windows only for the lowest octave, or a separate bass head;
    make the onset labels and weights fit real transients.
 4. Consider training on the patch clips as well, or modelling effects as a separate post stage.
